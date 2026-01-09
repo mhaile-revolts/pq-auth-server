@@ -1,6 +1,6 @@
 # PQ Authentication Server (C/C++)
 
-This project contains a prototype Post-Quantum (PQ) Authentication Server targeting Linux. The core daemon `pq-authd` is intended to run as a hardened systemd service, exposing a Kerberos-style AS/TGS API over a UNIX domain socket.
+This project contains a prototype Post-Quantum (PQ) Authentication Server targeting Linux. The core daemon `pq_authd` is intended to run as a hardened systemd service, exposing a Kerberos-style AS/TGS API over a UNIX domain socket.
 
 ## Build (on a system with CMake and a C++17 compiler)
 
@@ -11,7 +11,17 @@ cmake ..
 cmake --build .
 ```
 
-The resulting binary will be `pq_authd` in the build directory.
+The resulting binary will be `pq_authd` in the `build` directory.
+
+### Rebuilding after code changes
+
+From the repository root (after the initial configuration above):
+
+```bash
+cmake --build build
+```
+
+You can add `--config Release` if you are on a multi-config generator (e.g., Visual Studio), but on typical Unix Makefiles or Ninja this is not required.
 
 ## Install on Linux (example)
 
@@ -92,6 +102,80 @@ This repository also contains an experimental GSS-API mechanism, `mech_pqauth`, 
 
 This mechanism is designed so that higher-level components (such as NFS via RPCSEC_GSS or Samba via SPNEGO) can, in future phases, authenticate using PQ-Auth without any changes to NFS or SMB wire formats.
 
+## High-level architecture
+
+### Big picture
+
+`pq_authd` is a prototype Post-Quantum Authentication Server modeled after a Kerberos-style AS/TGS split, but implemented as a single daemon that accepts JSON-over-UNIX-socket requests:
+
+```text
++----------+       UNIX socket       +-----------+       +---------+
+| Client   |  JSON lines (AS/TGS)    | pq_authd  |  uses |  crypto |
+| (socat,  +-----------------------> | daemon    +-----> |  layer  |
+| GSS-API) |  JSON lines (responses) |           |       +---------+
++----------+ <----------------------+-----------+
+                         |
+                         | audit events (JSON lines)
+                         v
+                  +---------------+
+                  |  audit log    |
+                  | /var/log/...  |
+                  +---------------+
+```
+
+- The entrypoint is `cmd/pq-authd/main.cpp`.
+- It exposes a simple line-delimited JSON API over a UNIX domain socket.
+- Each incoming JSON line is routed based on a `"kind"` field (e.g., `"AS"`, `"TGS"`, or `"VALIDATE"`).
+- Requests are dispatched to the Authentication Server (AS) or Ticket Granting Server (TGS) modules, which in turn use the cryptographic subsystem to issue protected tickets.
+- All requests and responses are logged as structured audit events.
+
+At a high level, the module layout is:
+
+- `cmd/` – daemon entrypoint and socket server loop.
+- `as/` – Authentication Server (AS) request/response types and logic.
+- `tgs/` – Ticket Granting Server (TGS) request/response types and logic.
+- `crypto/` – algorithm enums, crypto provider interfaces, OpenSSL/liboqs-backed implementations, hybrid suites, and ticket protection.
+- `policy/` – configuration loading and (future) policy enforcement hooks.
+- `audit/` – append-only JSON-line audit logger.
+- `storage/` – placeholder for future ticket/session storage backends.
+- `packaging/` and `scripts/` – deployment artifacts and packaging script.
+- `gss/` – experimental GSS-API mechanism (`mech_pqauth`).
+
+### Request flow and daemon responsibilities
+
+`cmd/pq-authd/main.cpp` owns the main event loop:
+
+- Loads configuration via `pqauth::load_config_or_default()` from `policy/config.cpp`, providing the UNIX socket path and audit log file path.
+- Constructs an `AuditLogger` using the configured log path.
+- Creates and binds an `AF_UNIX` listening socket and accepts client connections in a loop.
+- For each connection, reads until it sees a newline (`'\n'`), treating each line as a complete JSON request.
+- Uses a small helper to detect the `"kind"` field in the JSON string.
+- Routes to:
+  - `parse_as_request_json` / `handle_as_request` / `as_response_to_json` for `"AS"` requests.
+  - `parse_tgs_request_json` / `handle_tgs_request` / `tgs_response_to_json` for `"TGS"` requests.
+  - `handle_validate_request_json` for `"VALIDATE"` requests, which perform header-level ticket validation (mode + expiry) for an opaque ticket string.
+- Wraps handler failures in a generic `{"status":"DENIED","error":"..."}` JSON response.
+- Writes each response as a single JSON line terminated with `\n`.
+
+Every raw request line is passed to `AuditLogger::log_event("request", line)`, so audit logging is centralized in `audit/` and decoupled from the AS/TGS business logic.
+
+### Crypto subsystem and ticket protection (overview)
+
+The `crypto/` directory isolates algorithm choices and cryptographic operations behind clear interfaces so that AS/TGS logic does not depend on specific libraries:
+
+- `algorithms.hpp`, `interfaces.hpp`, and related files define enums and provider interfaces for key exchange, signatures, AEAD, and HKDF.
+- `classical_providers.cpp` and `pq_providers.cpp` provide OpenSSL- and liboqs-backed implementations (e.g., X25519, Ed25519, Kyber-768, Dilithium-3, AES-256-GCM).
+- `hybrid_suite.hpp` wires these into coherent `CryptoSuite` instances for classical, PQ, and hybrid modes.
+- `crypto/ticket_protection.*` defines how logical ticket payloads are protected and encoded, using AES-256-GCM plus optional classical/PQ signatures, and provides helpers for header-level validation of opaque tickets.
+
+### Policy, configuration, and storage
+
+- `policy/config.*` defines a small configuration surface (`Config`) and `load_config_or_default`, which currently:
+  - Returns defaults `/run/pq-authd.sock` and `/var/log/pq-auth/auth.log`.
+  - Detects the existence of `/etc/pq-auth/pq-authd.yaml` but does not parse it yet (placeholder for future YAML-based policy).
+- `audit/audit_logger.*` implements minimal structured logging of events to a JSON-lines log file, intentionally swallowing logging errors so they do not interfere with authentication.
+- `storage/` is reserved for future persistent ticket/session storage layers.
+
 ## Daemon JSON API extensions
 
 In addition to the original `AS` and `TGS` JSON requests, `pq-authd` now supports a lightweight validation endpoint over its UNIX domain socket:
@@ -106,11 +190,18 @@ This endpoint is used internally by `mech_pqauth` but can also be exercised manu
 
 For Linux packaging, the `scripts/build_package.sh` helper can be used to produce a tarball suitable for installation:
 
-- It configures and builds the project into `build/` using CMake.
-- It stages a directory tree under `dist/pq-authd-<version>/` mirroring `/usr/local/sbin`, `/etc/pq-auth`, and `/etc/systemd/system`.
+- It configures and builds the project into `build/` using CMake (including, when available, the `mech_pqauth` GSS-API mechanism).
+- It stages a directory tree under `dist/pq-authd-<version>/` mirroring `/usr/local/sbin`, `/usr/lib/gssapi`, `/etc/pq-auth`, and `/etc/systemd/system`.
 - It copies `pq_authd` into `usr/local/sbin/pq-authd` and installs the example systemd unit and YAML configuration stub.
 - When the GSS-API mechanism is built, it also copies `libmech_pqauth.so` into `usr/lib/gssapi/mech_pqauth.so` inside the staging tree.
 - Finally, it creates `dist/pq-authd-<version>-linux-<arch>.tar.gz` containing the staged files.
+
+## Tests and linting (current state)
+
+- There is no dedicated test directory and no `add_test(...)` usage in CMake; an automated test suite is not yet wired up.
+- There are no project-specific linting or static-analysis targets defined in CMake (e.g., `clang-tidy` integration is not present).
+
+If you add tests or linting in the future, prefer to expose them as CMake targets so they can be invoked via `cmake --build` or `ctest`.
 
 ## Next steps
 
