@@ -1,0 +1,8 @@
+# pq-authd configuration example
+# Cryptographic modes and migration policy
+allowed_modes: [classical, hybrid, pq]
+minimum_mode: classical
+allow_downgrade: true
+
+# Ticket lifetime in seconds
+ticket_lifetime_seconds: 600

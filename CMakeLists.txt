@@ -16,6 +16,7 @@ add_executable(pq_authd
     as/as_server.cpp
     tgs/tgs_server.cpp
     audit/audit_logger.cpp
+    policy/config.cpp
     crypto/hkdf_sha3.cpp
     crypto/classical_providers.cpp
     crypto/pq_providers.cpp

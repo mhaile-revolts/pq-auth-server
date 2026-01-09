@@ -23,9 +23,9 @@ std::string random_ticket_id() {
     return oss.str();
 }
 
-std::int64_t now_plus_seconds(int seconds) {
+std::int64_t now_plus_seconds(int delta_seconds) {
     using namespace std::chrono;
-    auto tp = system_clock::now() + std::chrono::seconds(seconds);
+    auto tp = system_clock::now() + std::chrono::seconds(delta_seconds);
     return duration_cast<seconds>(tp.time_since_epoch()).count();
 }
 

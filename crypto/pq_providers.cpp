@@ -73,10 +73,15 @@ private:
 class DilithiumSignatureProvider : public SignatureProvider {
 public:
     DilithiumSignatureProvider() {
-        if (!OQS_SIG_alg_is_enabled(OQS_SIG_alg_dilithium_3)) {
+        // Avoid relying on the OQS_SIG_alg_dilithium_3 macro, which may not be
+        // defined in some liboqs builds, by using the algorithm identifier
+        // string directly.
+        static constexpr const char *kDilithium3AlgId = "Dilithium3";
+
+        if (!OQS_SIG_alg_is_enabled(kDilithium3AlgId)) {
             throw std::runtime_error("Dilithium3 not enabled in liboqs");
         }
-        sig_ = OQS_SIG_new(OQS_SIG_alg_dilithium_3);
+        sig_ = OQS_SIG_new(kDilithium3AlgId);
         if (!sig_) {
             throw std::runtime_error("OQS_SIG_new(dilithium_3) failed");
         }

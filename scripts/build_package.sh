@@ -1,20 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Simple build-and-package helper for pq-authd on Linux.
-# Usage:
+# Simple build-and-package helper for pq-authd.
+#
+# Usage (native Linux):
 #   scripts/build_package.sh [version]
+#
+# Usage (via Docker on macOS or other hosts):
+#   scripts/build_package.sh --docker [version]
 #
 # This will:
 #   - configure and build pq_authd using CMake
 #   - stage files under dist/pq-authd-<version>/...
 #   - produce a tarball dist/pq-authd-<version>-linux-<arch>.tar.gz
 
+USE_DOCKER=0
+if [[ "${1:-}" == "--docker" ]]; then
+  USE_DOCKER=1
+  shift
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="${PROJECT_ROOT}/build"
 DIST_DIR="${PROJECT_ROOT}/dist"
 VERSION="${1:-dev}"
 STAGE_DIR="${DIST_DIR}/pq-authd-${VERSION}"
+
+if [[ "${USE_DOCKER}" -eq 1 ]]; then
+  docker build -t pq-authd-builder -f "${PROJECT_ROOT}/Dockerfile" "${PROJECT_ROOT}"
+  docker run --rm \
+    -v "${PROJECT_ROOT}":/src \
+    -w /src \
+    pq-authd-builder \
+    bash -lc "scripts/build_package.sh ${VERSION}"
+  exit 0
+fi
 
 rm -rf "${STAGE_DIR}"
 mkdir -p "${BUILD_DIR}" "${STAGE_DIR}" "${DIST_DIR}"

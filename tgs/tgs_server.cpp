@@ -22,9 +22,9 @@ std::string random_service_ticket_id() {
     return oss.str();
 }
 
-std::int64_t now_plus_seconds(int seconds) {
+std::int64_t now_plus_seconds(int offset_seconds) {
     using namespace std::chrono;
-    auto tp = system_clock::now() + seconds(seconds);
+    auto tp = system_clock::now() + std::chrono::seconds(offset_seconds);
     return duration_cast<seconds>(tp.time_since_epoch()).count();
 }
 

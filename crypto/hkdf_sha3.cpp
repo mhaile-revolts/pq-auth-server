@@ -1,6 +1,7 @@
 #include "hkdf_sha3.hpp"
 
 #include <openssl/evp.h>
+#include <openssl/kdf.h>
 
 #include <stdexcept>
 
